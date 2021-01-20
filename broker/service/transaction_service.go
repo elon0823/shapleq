@@ -68,9 +68,9 @@ func (s *TransactionService) HandleEventStreams(brokerCtx context.Context, event
 						}
 					}()
 				}
-			default:
+				//default:
 			}
-			runtime.Gosched()
+			//runtime.Gosched()
 		}
 	}()
 

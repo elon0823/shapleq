@@ -44,10 +44,10 @@ func (s *StreamService) HandleEventStreams(brokerCtx context.Context,
 					wg.Add(1)
 					go s.handleEventStream(eventStream, sessionErrCh, &wg)
 				}
-			default:
+				//default:
 
 			}
-			runtime.Gosched()
+			//runtime.Gosched()
 		}
 	}()
 

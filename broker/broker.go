@@ -249,7 +249,7 @@ func (b *Broker) handleNewConnections(brokerCtx context.Context) (<-chan Session
 			case <-brokerCtx.Done():
 				return
 			}
-			runtime.Gosched()
+			//runtime.Gosched()
 		}
 	}()
 
@@ -328,7 +328,7 @@ func (b *Broker) generateEventStreams(scCh <-chan SessionAndContext) (<-chan int
 
 			transactionalEvents <- internals.EventStream{sessAndCtx.session, txMsgCh, sessAndCtx.ctx, sessAndCtx.cancelSession}
 			streamingEvents <- internals.EventStream{sessAndCtx.session, streamMsgCh, sessAndCtx.ctx, sessAndCtx.cancelSession}
-			runtime.Gosched()
+			//runtime.Gosched()
 		}
 	}()
 

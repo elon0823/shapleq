@@ -16,14 +16,15 @@ import (
 
 type Socket struct {
 	sync.Mutex
-	conn     net.Conn
-	rTimeout int
-	wTimeout int
-	closed   bool
+	conn      net.Conn
+	rTimeout  int
+	wTimeout  int
+	closed    bool
+	blockTime int
 }
 
 func NewSocket(conn net.Conn, rTimeout int, wTimeout int) *Socket {
-	return &Socket{conn: conn, rTimeout: rTimeout, wTimeout: wTimeout, closed: false}
+	return &Socket{conn: conn, rTimeout: rTimeout, wTimeout: wTimeout, closed: false, blockTime: 10}
 }
 
 func (s *Socket) SetReadTimeout(rTimeout int) {
@@ -56,13 +57,15 @@ func (s *Socket) ContinuousRead(ctx context.Context) (<-chan *message.QMessage, 
 	go func() {
 		defer close(msgStream)
 		defer close(errCh)
+		accBlockTime := 0
+
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			default:
 			}
-			err := s.conn.SetReadDeadline(time.Now().Add(time.Millisecond * time.Duration(s.rTimeout)))
+			err := s.conn.SetReadDeadline(time.Now().Add(time.Millisecond * time.Duration(s.blockTime)))
 			if err != nil {
 				errCh <- pqerror.SocketReadError{ErrStr: err.Error()}
 				return
@@ -75,9 +78,14 @@ func (s *Socket) ContinuousRead(ctx context.Context) (<-chan *message.QMessage, 
 						errCh <- pqerror.SocketClosedError{}
 						return
 					}
+					if accBlockTime > s.rTimeout {
+						errCh <- pqerror.ReadTimeOutError{}
+						return
+					} else {
+						accBlockTime += s.blockTime
+						continue
+					}
 
-					errCh <- pqerror.ReadTimeOutError{}
-					return
 				} else if errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET) {
 					errCh <- pqerror.SocketClosedError{}
 					return
@@ -106,6 +114,7 @@ func (s *Socket) ContinuousRead(ctx context.Context) (<-chan *message.QMessage, 
 					msgStream <- msg
 					processed = binary.Size(&Header{}) + len(msg.Data)
 					data = data[processed:]
+					accBlockTime = 0
 				}
 			}
 			runtime.Gosched()
@@ -128,40 +137,53 @@ func (s *Socket) ContinuousWrite(ctx context.Context, msgCh <-chan *message.QMes
 				case <-ctx.Done():
 					return
 				default:
-					err := s.conn.SetWriteDeadline(time.Now().Add(time.Millisecond * time.Duration(s.wTimeout)))
-					if err != nil {
-						errCh <- pqerror.SocketWriteError{ErrStr: err.Error()}
-						return
-					}
-					data, err := Serialize(message)
-					if err != nil {
-						errCh <- err
-						return
-					}
-					if _, err := s.conn.Write(data); err != nil {
-						if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-							if s.IsClosed() {
-								errCh <- pqerror.SocketClosedError{}
-								return
-							}
-							errCh <- pqerror.WriteTimeOutError{}
-							return
-						} else if errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET) {
-							errCh <- pqerror.SocketClosedError{}
-							return
-						} else if err == io.EOF {
-							errCh <- pqerror.SocketClosedError{}
-							return
-						} else {
+					accBlockTime := 0
+					for {
+						err := s.conn.SetWriteDeadline(time.Now().Add(time.Millisecond * time.Duration(s.blockTime)))
+						if err != nil {
 							errCh <- pqerror.SocketWriteError{ErrStr: err.Error()}
 							return
 						}
+						data, err := Serialize(message)
+						if err != nil {
+							errCh <- err
+							return
+						}
+						if _, err := s.conn.Write(data); err != nil {
+							if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+								if s.IsClosed() {
+									errCh <- pqerror.SocketClosedError{}
+									return
+								}
+								if accBlockTime > s.wTimeout {
+									errCh <- pqerror.WriteTimeOutError{}
+									return
+								} else {
+									accBlockTime += s.blockTime
+									continue
+								}
+
+							} else if errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET) {
+								errCh <- pqerror.SocketClosedError{}
+								return
+							} else if err == io.EOF {
+								errCh <- pqerror.SocketClosedError{}
+								return
+							} else {
+								errCh <- pqerror.SocketWriteError{ErrStr: err.Error()}
+								return
+							}
+						}
+						runtime.Gosched()
+						break
 					}
+
 				}
 			}(msg)
 			runtime.Gosched()
+			wg.Wait()
 		}
-		wg.Wait()
+
 	}()
 
 	return errCh
